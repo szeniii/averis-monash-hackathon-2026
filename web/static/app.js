@@ -18,6 +18,21 @@ const FIELD_LABEL = {
   gross_weight_kg: "Gross weight",
 };
 
+const CATEGORY_LABEL = {
+  BL_COMPARISON: "Comparison",
+  SI_REQUEST: "SI request",
+  INVOICE_QUERY: "Invoice",
+  GENERAL: "General",
+  SPAM: "Spam",
+};
+
+const CATEGORY_NOTE = {
+  SI_REQUEST: "A request to prepare a Shipping Instruction. No documents to check.",
+  INVOICE_QUERY: "A billing question. No documents to check.",
+  GENERAL: "Operational traffic needing no document action.",
+  SPAM: "Unsolicited mail. Dropped before any document work.",
+};
+
 const REASON_TEXT = {
   wrong_doc_type: "One attachment is not the document it claims to be.",
   missing_attachment: "A document needed for the comparison is not here.",
@@ -25,7 +40,8 @@ const REASON_TEXT = {
   missing_value: "A value is blank in one document. Blank is uncertainty, not a discrepancy.",
 };
 
-let current = null;
+let inboxCache = [];
+let activeCategory = "ALL";
 
 /* ---------------------------------------------------------------- fetch */
 
@@ -53,14 +69,163 @@ document.querySelectorAll(".tab").forEach((tab) => {
   });
 });
 
+/* ---------------------------------------------------------------- inbox */
+
+function categoryPill(category, confidence) {
+  const pill = el("span", `pill cat-${category}`,
+    CATEGORY_LABEL[category] || category);
+  if (confidence !== undefined && confidence !== null) {
+    pill.title = `confidence ${Math.round(confidence * 100)}%`;
+  }
+  return pill;
+}
+
+async function loadSummary() {
+  let data;
+  try {
+    data = await api("/api/summary");
+  } catch {
+    return;
+  }
+  $("#source-badge").textContent =
+    `inbox: ${data.emails} ${data.is_real_dataset ? "emails" : "demo emails"}`;
+
+  const strip = $("#cat-strip");
+  strip.replaceChildren();
+
+  const all = el("button", "cat-chip" + (activeCategory === "ALL" ? " is-on" : ""));
+  all.append(el("strong", null, String(data.emails)), el("span", null, "All"));
+  all.addEventListener("click", () => { activeCategory = "ALL"; loadInbox(); });
+  strip.append(all);
+
+  Object.entries(data.by_category).forEach(([cat, count]) => {
+    if (!count) return;
+    const chip = el("button",
+      `cat-chip cat-${cat}` + (activeCategory === cat ? " is-on" : ""));
+    chip.append(el("strong", null, String(count)),
+      el("span", null, CATEGORY_LABEL[cat] || cat));
+    chip.addEventListener("click", () => { activeCategory = cat; loadInbox(); });
+    strip.append(chip);
+  });
+}
+
+async function loadInbox() {
+  const q = $("#inbox-q").value.trim();
+  let data;
+  try {
+    data = await api(`/api/inbox?category=${encodeURIComponent(activeCategory)}` +
+      (q ? `&q=${encodeURIComponent(q)}` : ""));
+  } catch (err) {
+    $("#inbox-count").textContent = err.message;
+    return;
+  }
+  inboxCache = data.emails;
+
+  const shown = Math.min(data.total, 250);
+  $("#inbox-count").textContent =
+    `${data.total} email${data.total === 1 ? "" : "s"}` +
+    (data.total > shown ? `, showing the first ${shown}` : "") +
+    ` · ${data.source}`;
+
+  const list = $("#inbox-list");
+  list.replaceChildren();
+  if (!data.total) {
+    list.append(el("p", "empty", "Nothing matches."));
+  }
+
+  data.emails.slice(0, shown).forEach((row) => {
+    const card = el("button", "mail");
+    const head = el("div", "mail-head");
+    head.append(categoryPill(row.category, row.confidence));
+    if (row.attachment_count) {
+      head.append(el("span", "clip", `${row.attachment_count} attached`));
+    }
+    head.append(el("span", "mail-id", row.email_id));
+
+    card.append(head);
+    card.append(el("div", "mail-subject", row.subject || "(no subject)"));
+    card.append(el("div", "mail-from", row.from));
+
+    card.addEventListener("click", () => runAndRender(
+      api(`/api/inbox/${row.email_id}/run`, { method: "POST" }), card));
+    list.append(card);
+  });
+
+  loadSummary();
+}
+
+let searchTimer = null;
+$("#inbox-q").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(loadInbox, 220);
+});
+
+/* ------------------------------------------------------------- classify */
+
+$("#run-classify").addEventListener("click", async (e) => {
+  const button = e.currentTarget;
+  const subject = $("#cls-subject").value;
+  const body = $("#cls-body").value;
+  if (!subject.trim() && !body.trim()) {
+    return;
+  }
+  button.disabled = true;
+  const out = $("#classify-out");
+  try {
+    const data = await api("/api/classify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subject, body }),
+    });
+    out.replaceChildren();
+    const card = el("div", "cls-card");
+    const top = el("div", "cls-top");
+    top.append(categoryPill(data.category, data.confidence));
+    top.append(el("span", "cls-conf", `${Math.round(data.confidence * 100)}% confident`));
+    card.append(top);
+    card.append(el("p", "cls-note",
+      data.goes_to_comparison
+        ? "Goes on to the document check."
+        : (CATEGORY_NOTE[data.category] || "No document check needed.")));
+    card.append(el("p", "cls-meta", `decided by ${data.decided_by}`));
+    out.append(card);
+  } catch (err) {
+    out.replaceChildren(el("p", "err", err.message));
+  } finally {
+    button.disabled = false;
+  }
+});
+
 /* ---------------------------------------------------------------- report */
+
+function emailHeader(email, category, confidence, decidedBy) {
+  const box = el("div", "mailhead");
+  const line = el("div", "mailhead-top");
+  line.append(el("span", "mail-id", email.email_id));
+  if (category) line.append(categoryPill(category, confidence));
+  if (decidedBy) line.append(el("span", "cls-meta", `stage 1 by ${decidedBy}`));
+  box.append(line);
+  box.append(el("div", "mailhead-subject", email.subject || "(no subject)"));
+  const meta = [email.from];
+  if (email.attachments && email.attachments.length) {
+    meta.push(email.attachments.join(", "));
+  }
+  box.append(el("div", "mailhead-meta", meta.filter(Boolean).join(" · ")));
+  return box;
+}
 
 function verdictBlock(data) {
   const box = el("div", "verdict");
   const head = el("h3");
   const line = el("p");
 
-  if (data.status === "OK") {
+  const notComparison = data.category && data.category !== "BL_COMPARISON";
+
+  if (notComparison) {
+    box.classList.add("v-info");
+    head.textContent = `Classified as ${CATEGORY_LABEL[data.category] || data.category}`;
+    line.textContent = CATEGORY_NOTE[data.category] || "No document check needed.";
+  } else if (data.status === "OK") {
     box.classList.add("v-ok");
     head.textContent = "No mismatch detected";
     line.textContent = "All seven fields agree once the values are normalised.";
@@ -80,12 +245,8 @@ function verdictBlock(data) {
   }
 
   box.append(head, line);
-  if (data.escalation_detail) {
-    box.append(el("p", "sub", data.escalation_detail));
-  }
-  if (data.human_reviewed) {
-    box.append(el("p", "sub", "Reviewed by a person."));
-  }
+  if (data.escalation_detail) box.append(el("p", "sub", data.escalation_detail));
+  if (data.human_reviewed) box.append(el("p", "sub", "Reviewed by a person."));
   return box;
 }
 
@@ -96,7 +257,8 @@ function valueCell(raw, normalized, label) {
     return td;
   }
   td.append(el("span", "val", raw));
-  const note = normalized && normalized !== raw ? `${label || "unlabelled"} → ${normalized}` : (label || "");
+  const note = normalized && normalized !== raw
+    ? `${label || "unlabelled"} → ${normalized}` : (label || "");
   if (note) td.append(el("span", "lab", note));
   return td;
 }
@@ -105,8 +267,8 @@ function fieldTable(fields) {
   const table = el("table");
   const thead = el("thead");
   const hr = el("tr");
-  ["Field", "Shipping Instruction", "Draft Bill of Lading", "Verdict"].forEach((h) =>
-    hr.append(el("th", null, h)));
+  ["Field", "Shipping Instruction", "Draft Bill of Lading", "Verdict"]
+    .forEach((h) => hr.append(el("th", null, h)));
   thead.append(hr);
 
   const tbody = el("tbody");
@@ -157,7 +319,8 @@ function reviewBlock(data) {
   fieldLabel.htmlFor = "rv-field";
   const select = el("select");
   select.id = "rv-field";
-  (data.fields.length ? data.fields : Object.keys(FIELD_LABEL).map((f) => ({ field: f, status: "missing" })))
+  (data.fields.length ? data.fields
+    : Object.keys(FIELD_LABEL).map((f) => ({ field: f, status: "missing" })))
     .forEach((f) => {
       const opt = el("option", null, `${FIELD_LABEL[f.field] || f.field} (${f.status})`);
       opt.value = f.field;
@@ -188,11 +351,12 @@ function reviewBlock(data) {
   box.append(row);
 
   const actions = el("div", "actions");
+
   const save = el("button", "primary", "Apply correction");
   save.addEventListener("click", async () => {
     save.disabled = true;
     try {
-      const out = await api(`/api/cases/${data.case_id}/resolve`, {
+      render(await api(`/api/cases/${data.case_id}/resolve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -200,8 +364,7 @@ function reviewBlock(data) {
           si_value: siInput.value.trim() || null,
           bl_value: blInput.value.trim() || null,
         }),
-      });
-      render(out);
+      }));
       loadQueue();
     } catch (err) {
       showError(err.message);
@@ -219,7 +382,19 @@ function reviewBlock(data) {
     }
   });
 
-  actions.append(save, accept);
+  const retry = el("button", null, "Retry");
+  retry.title = "Run this case again from the original documents";
+  retry.addEventListener("click", async () => {
+    retry.disabled = true;
+    try {
+      render(await api(`/api/cases/${data.case_id}/retry`, { method: "POST" }));
+      loadQueue();
+    } catch (err) {
+      showError(err.message);
+    }
+  });
+
+  actions.append(save, accept, retry);
   box.append(actions);
 
   if (data.corrections && data.corrections.length) {
@@ -237,12 +412,19 @@ function reviewBlock(data) {
 }
 
 function render(data) {
-  current = data;
   const box = $("#report");
   box.replaceChildren();
+
+  if (data.email) {
+    box.append(emailHeader(data.email, data.category,
+      data.category_confidence, data.decided_by));
+  }
   box.append(verdictBlock(data));
+
   if (data.fields && data.fields.length) box.append(fieldTable(data.fields));
-  box.append(docNote(data.documents || []));
+  if (data.documents && data.documents.some((d) => d.path)) {
+    box.append(docNote(data.documents));
+  }
   if (data.documents && data.documents.every((d) => d.path)) {
     box.append(reviewBlock(data));
   }
@@ -269,7 +451,7 @@ async function loadQueue() {
 
   data.cases.forEach((c) => {
     const row = el("div", "qrow");
-    row.append(el("span", "qid", c.case_id));
+    row.append(el("span", "qid", c.email && c.email.email_id ? c.email.email_id : c.case_id));
     row.append(el("span", `pill p-${c.status === "OK" ? "match"
       : c.status === "MISMATCH" ? "mismatch" : "missing"}`, c.status));
 
@@ -277,8 +459,10 @@ async function loadQueue() {
     if (c.defect_fields.length) {
       detail = c.defect_fields.map((f) => FIELD_LABEL[f] || f).join(", ");
     }
+    if (!detail && c.email && c.email.subject) detail = c.email.subject;
     row.append(el("span", "qdetail", detail || "all seven fields agree"));
 
+    if (c.corrections) row.append(el("span", "tick", `${c.corrections} corrected`));
     if (c.human_reviewed) row.append(el("span", "tick", "reviewed"));
 
     const open = el("button", "qopen", "Open");
@@ -359,6 +543,7 @@ $("#run-upload").addEventListener("click", (e) => {
   } catch {
     $("#engine-badge").textContent = "engine: unreachable";
   }
+  loadInbox();
   loadDemos();
   loadQueue();
 })();

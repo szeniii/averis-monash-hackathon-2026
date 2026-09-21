@@ -178,3 +178,42 @@ def test_describe_never_prints_the_key(monkeypatch):
     from sdoc.config import describe
     monkeypatch.setenv("GEMINI_API_KEY", "super-secret-value")
     assert "super-secret-value" not in describe()
+
+
+# --- the demo inbox and stage 1 -------------------------------------------
+
+def test_demo_inbox_covers_every_category():
+    """A demo inbox that cannot show all five categories cannot show the
+    classification stage working."""
+    from sdoc.classify import rules
+    from sdoc.schemas import Category
+    from web.demo_inbox import DemoInbox
+
+    seen = set()
+    for email in DemoInbox().emails():
+        category, _, _ = rules.classify(email)
+        assert category is not None, f"{email['email_id']} was not classified"
+        seen.add(category)
+    assert seen == set(Category), f"missing: {set(Category) - seen}"
+
+
+def test_demo_inbox_runs_through_the_real_pipeline():
+    """DemoInbox must satisfy the slice of Inbox that process_email uses."""
+    from sdoc import pipeline
+    from sdoc.extract.labels import LabelExtractor
+    from sdoc.schemas import Category, Status
+    from web.demo_inbox import DemoInbox
+
+    inbox = DemoInbox()
+    extractor = LabelExtractor()
+    results = {e["email_id"]: pipeline.process_email(inbox, e, None, extractor)
+               for e in inbox.emails()}
+
+    assert results["demo_001"].status is Status.OK           # clean pair
+    assert results["demo_002"].status is Status.MISMATCH     # real discrepancy
+    assert set(results["demo_002"].defect_fields) == {"consignee", "container_count"}
+    assert results["demo_003"].status is Status.NEEDS_REVIEW  # blank value
+    assert results["demo_004"].status is Status.NEEDS_REVIEW  # wrong document
+    assert results["demo_005"].status is Status.NEEDS_REVIEW  # claims an attachment
+    assert results["demo_012"].category is Category.SPAM
+    assert results["demo_012"].status is Status.OK            # nothing to compare

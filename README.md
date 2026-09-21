@@ -177,6 +177,7 @@ so the degradation is visible in the output.
 ├── web/                   # the review app served at the deployed URL
 │   ├── app.py             # FastAPI: compare, review queue, health
 │   ├── demo_cases.py      # built-in pairs, so the demo needs no dataset
+│   ├── demo_inbox.py      # built-in inbox for instances with no dataset
 │   └── static/            # single-page front end
 ├── scripts/               # setup_data.sh, plus pipeline entry points
 ├── tests/                 # unit tests
@@ -222,11 +223,22 @@ pip install -r requirements.txt
 uvicorn web.app:app --reload        # http://localhost:8000
 ```
 
-Three ways in: four built-in demo pairs, a paste box, or an upload of two
-files (`.txt`, `.pdf`, `.docx`, `.xlsx`). Every comparison lands in a review
+It opens on the **inbox**, which is stage 1 made visible: every email with
+its predicted category, filterable by category, searchable by subject or
+sender. Clicking one runs `pipeline.process_email` — the same function that
+writes `submission.json` for all 520 — and the report is headed by the email
+it came from. A **Classify** tab does stage 1 alone on any pasted email.
+Beyond that: four built-in demo pairs, a paste box, and an upload of two
+files (`.txt`, `.pdf`, `.docx`, `.xlsx`). Every case lands in a review
 queue. A case the gate escalated stays open until a person supplies the value
 it could not read, at which point the case is decided again from the
 corrected evidence.
+
+The inbox uses the organisers' bundle when `data/` is present, which is the
+case locally, and falls back to thirteen built-in emails covering all five
+categories when it is not, which is the case on a deployed instance. Nothing
+in that fallback is hard-coded to a category — the classifier reads those
+emails exactly as it reads the real ones.
 
 It runs with no API key. Stage 2 falls back to `sdoc/extract/labels.py`,
 which matches label text rather than reading meaning; set `GEMINI_API_KEY`
@@ -236,12 +248,17 @@ anything the API could not answer.
 | Route | What it does |
 |---|---|
 | `GET /` | the app |
+| `GET /api/inbox` | every email with its predicted category, filterable |
+| `GET /api/summary` | the category spread across the inbox |
+| `POST /api/inbox/{id}/run` | run one email through the whole pipeline |
+| `POST /api/classify` | stage 1 on a pasted email |
 | `GET /health` | liveness, and which extraction engine is active |
 | `POST /api/compare` | compare two pasted documents |
 | `POST /api/compare/upload` | compare two uploaded files |
 | `GET /api/cases` | the review queue |
 | `POST /api/cases/{id}/resolve` | a person supplies a value, case re-decided |
 | `POST /api/cases/{id}/confirm` | a person accepts the result |
+| `POST /api/cases/{id}/retry` | run a case again after a transient failure |
 | `GET /docs` | generated API reference |
 
 The queue is in-memory, which is the right trade for a demonstration surface:

@@ -29,13 +29,17 @@ from sdoc.config import describe, load_env                      # noqa: E402
 
 load_env()   # GEMINI_API_KEY from .env, unless the host already set it
 
+from sdoc import pipeline                                        # noqa: E402
+from sdoc.classify import rules                                  # noqa: E402
 from sdoc.compare.comparator import compare                      # noqa: E402
 from sdoc.decide.gate import decide                              # noqa: E402
 from sdoc.documents import reader                                # noqa: E402
 from sdoc.extract.labels import ChainExtractor, LabelExtractor   # noqa: E402
+from sdoc.loader import Inbox                                    # noqa: E402
 from sdoc.schemas import (CaseResult, Category, DocumentExtract,  # noqa: E402
                           ExtractedField, FIELDS)
 from web import demo_cases                                       # noqa: E402
+from web.demo_inbox import DemoInbox                             # noqa: E402
 
 STATIC = pathlib.Path(__file__).resolve().parent / "static"
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
@@ -62,6 +66,90 @@ def _build_extractor():
 EXTRACTOR, ENGINE = _build_extractor()
 print(f"  extraction: {describe()}")
 
+
+# --- the inbox ------------------------------------------------------------
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+DATA_CANDIDATES = [ROOT / "data" / "sdoc-hackathon-bundle", ROOT / "data"]
+
+
+def _build_inbox():
+    """The organisers' bundle when it is on disk, the demo inbox otherwise.
+
+    The dataset is gitignored, so a deployed instance has nothing to browse.
+    Locally the real 520 emails are here and the same screens use them.
+    """
+    for path in DATA_CANDIDATES:
+        if (path / "inbox").is_dir():
+            return Inbox(str(path)), f"dataset ({path.name})", True
+    return DemoInbox(), "built-in demo inbox", False
+
+
+INBOX, INBOX_LABEL, INBOX_IS_REAL = _build_inbox()
+
+
+def _build_classifier():
+    """Gemini when a key is present; the rule classifier is always the net."""
+    if not os.environ.get("GEMINI_API_KEY"):
+        return None
+    try:
+        from sdoc.classify.llm import GeminiClassifier
+        return GeminiClassifier()
+    except Exception:
+        return None
+
+
+CLASSIFIER = _build_classifier()
+
+_CLASS_CACHE: dict = {}
+
+
+def _classify(email: dict) -> tuple:
+    """Same order the pipeline uses: model first, rules as the fallback.
+
+    Listing the whole inbox runs on rules only -- they are regex-fast and
+    free, so opening the page never costs an API call. The model is used
+    when a single email is opened or pasted in.
+    """
+    category, confidence, decided_by = rules.classify(email)
+    if category is None:
+        category, confidence, decided_by = Category.GENERAL, 0.3, "fallback"
+    return category, confidence, decided_by
+
+
+def _classify_deep(email: dict) -> tuple:
+    category, confidence, decided_by = None, 0.0, None
+    if CLASSIFIER is not None:
+        try:
+            category, confidence, decided_by = CLASSIFIER(email)
+        except Exception:
+            category = None
+    if category is None:
+        return _classify(email)
+    return category, confidence, decided_by
+
+
+def _summarise_email(email: dict) -> dict:
+    eid = email["email_id"]
+    if eid not in _CLASS_CACHE:
+        category, confidence, decided_by = _classify(email)
+        _CLASS_CACHE[eid] = {
+            "category": category.value,
+            "confidence": round(confidence, 3),
+            "decided_by": decided_by,
+        }
+    body = (email.get("body") or "").strip().replace("\r", "")
+    attachments = email.get("attachments") or []
+    return {
+        "email_id": eid,
+        "from": email.get("from", ""),
+        "subject": email.get("subject", ""),
+        "preview": body[:160] + ("..." if len(body) > 160 else ""),
+        "attachments": [a.split("/")[-1] for a in attachments],
+        "attachment_count": len(attachments),
+        **_CLASS_CACHE[eid],
+    }
+
 # Review queue. In-memory on purpose: this is a demonstration surface, and
 # a restart losing the queue is the correct trade for having no database.
 CASES: dict = {}
@@ -74,6 +162,12 @@ class ComparePayload(BaseModel):
     bl_text: str = ""
     si_name: str = "pasted_SI.txt"
     bl_name: str = "pasted_BL.txt"
+
+
+class ClassifyPayload(BaseModel):
+    subject: str = ""
+    body: str = ""
+    sender: str = ""
 
 
 class ResolvePayload(BaseModel):
@@ -128,6 +222,9 @@ def _serialise(case: CaseResult, si_doc, bl_doc) -> dict:
         "has_defect": case.has_defect,
         "defect_fields": case.defect_fields,
         "human_reviewed": case.human_reviewed,
+        "category": case.category.value,
+        "category_confidence": round(case.category_confidence, 3),
+        "decided_by": case.decided_by,
         "engine": ENGINE,
         "documents": [
             {"role": "SI", "path": si_doc.path if si_doc else None,
@@ -249,6 +346,7 @@ def list_cases():
             "human_reviewed": case.human_reviewed,
             "corrections": len(entry["corrections"]),
             "created_at": entry["created_at"],
+            "email": entry.get("email"),
         })
     return {"cases": out,
             "open": sum(1 for c in out
@@ -263,6 +361,7 @@ def get_case(case_id: str):
         raise HTTPException(404, f"no case called {case_id!r}")
     payload = _serialise(entry["case"], entry["si_doc"], entry["bl_doc"])
     payload["corrections"] = entry["corrections"]
+    payload["email"] = entry.get("email")
     return payload
 
 
@@ -314,6 +413,158 @@ def confirm_case(case_id: str):
         raise HTTPException(404, f"no case called {case_id!r}")
     entry["case"].human_reviewed = True
     return _serialise(entry["case"], entry["si_doc"], entry["bl_doc"])
+
+
+# --- inbox and classification --------------------------------------------
+
+@app.get("/api/inbox")
+def list_inbox(category: str | None = None, q: str | None = None):
+    """Every email with its predicted category. Filters are optional."""
+    rows = [_summarise_email(e) for e in INBOX.emails()]
+
+    if category and category.upper() != "ALL":
+        wanted = category.upper()
+        rows = [r for r in rows if r["category"] == wanted]
+    if q:
+        needle = q.lower()
+        rows = [r for r in rows
+                if needle in r["subject"].lower()
+                or needle in r["from"].lower()
+                or needle in r["email_id"].lower()]
+
+    return {"source": INBOX_LABEL, "is_real_dataset": INBOX_IS_REAL,
+            "total": len(rows), "emails": rows}
+
+
+@app.get("/api/summary")
+def summary():
+    """Category spread across the whole inbox, plus what review has seen."""
+    rows = [_summarise_email(e) for e in INBOX.emails()]
+    by_category = {c.value: 0 for c in Category}
+    for row in rows:
+        by_category[row["category"]] = by_category.get(row["category"], 0) + 1
+
+    statuses: dict = {}
+    for entry in CASES.values():
+        key = entry["case"].status.value
+        statuses[key] = statuses.get(key, 0) + 1
+
+    return {
+        "source": INBOX_LABEL,
+        "is_real_dataset": INBOX_IS_REAL,
+        "emails": len(rows),
+        "by_category": by_category,
+        "cases_run": len(CASES),
+        "case_statuses": statuses,
+        "engine": ENGINE,
+    }
+
+
+@app.get("/api/inbox/{email_id}")
+def get_email(email_id: str):
+    email = INBOX.get(email_id)
+    if not email:
+        raise HTTPException(404, f"no email called {email_id!r}")
+    category, confidence, decided_by = _classify_deep(email)
+    return {
+        "email_id": email_id,
+        "from": email.get("from", ""),
+        "subject": email.get("subject", ""),
+        "body": email.get("body", ""),
+        "attachments": email.get("attachments") or [],
+        "category": category.value,
+        "confidence": round(confidence, 3),
+        "decided_by": decided_by,
+    }
+
+
+@app.post("/api/inbox/{email_id}/run")
+def run_email(email_id: str):
+    """Run one email through the real pipeline, start to finish.
+
+    This calls sdoc.pipeline.process_email -- the same function that produces
+    submission.json for all 520 -- so what the screen shows is not a
+    re-implementation of the rules.
+    """
+    email = INBOX.get(email_id)
+    if not email:
+        raise HTTPException(404, f"no email called {email_id!r}")
+
+    try:
+        case = pipeline.process_email(INBOX, email, classifier=CLASSIFIER,
+                                      extractor=EXTRACTOR)
+    except Exception as exc:
+        raise HTTPException(500, f"pipeline failed on {email_id}: {exc}")
+
+    # Read the attachments again for the evidence footer. This is text
+    # extraction only, no model call, so it costs nothing.
+    si_doc = bl_doc = None
+    for path in email.get("attachments") or []:
+        doc = reader.read(INBOX, path)
+        if doc.doc_role == "SI" and si_doc is None:
+            si_doc = doc
+        elif doc.doc_role == "BL" and bl_doc is None:
+            bl_doc = doc
+
+    case.email_id = email_id
+    payload = _serialise(case, si_doc, bl_doc)
+    payload["email"] = {
+        "email_id": email_id,
+        "from": email.get("from", ""),
+        "subject": email.get("subject", ""),
+        "attachments": [p.split("/")[-1] for p in (email.get("attachments") or [])],
+    }
+
+    CASES[email_id] = {
+        "case": case, "si_doc": si_doc, "bl_doc": bl_doc,
+        "email": payload["email"],
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "corrections": [],
+        "source": "inbox",
+    }
+    return payload
+
+
+@app.post("/api/classify")
+def classify_email(payload: ClassifyPayload):
+    """Classify a pasted email. Shows stage 1 on its own, no documents."""
+    subject, body = payload.subject, payload.body
+    email = {"email_id": "pasted", "from": payload.sender, "subject": subject,
+             "body": body, "attachments": []}
+    if not (subject.strip() or body.strip()):
+        raise HTTPException(400, "paste a subject or a body to classify")
+
+    category, confidence, decided_by = _classify_deep(email)
+    rule_category, rule_confidence, _ = rules.classify(email)
+    return {
+        "category": category.value,
+        "confidence": round(confidence, 3),
+        "decided_by": decided_by,
+        "rule_category": rule_category.value if rule_category else None,
+        "rule_confidence": round(rule_confidence, 3),
+        "goes_to_comparison": category is Category.BL_COMPARISON,
+    }
+
+
+@app.post("/api/cases/{case_id}/retry")
+def retry_case(case_id: str):
+    """Run a case again. For a failure that was transient, such as a rate
+    limit mid-extraction, this is the difference between a dead end and a
+    second chance."""
+    entry = CASES.get(case_id)
+    if entry is None:
+        raise HTTPException(404, f"no case called {case_id!r}")
+
+    if entry.get("source") == "inbox":
+        return run_email(case_id)
+
+    si_doc, bl_doc = entry["si_doc"], entry["bl_doc"]
+    if si_doc is None and bl_doc is None:
+        raise HTTPException(409, "nothing to retry: this case has no documents")
+    for doc in (si_doc, bl_doc):
+        if doc is not None:
+            doc.fields = {}
+    return _run(si_doc, bl_doc, case_id=case_id)
 
 
 @app.get("/")
