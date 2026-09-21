@@ -13,8 +13,9 @@ from collections import Counter
 # let this script find the sdoc package when run from the repo root
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from sdoc import pipeline, submission            
-from sdoc.classify.llm import GeminiClassifier   
+from sdoc import pipeline, submission
+from sdoc.classify.llm import GeminiClassifier
+from sdoc.config import describe, load_env
 from sdoc.extract.llm import GeminiExtractor
 from sdoc.loader import Inbox                    
 
@@ -22,6 +23,9 @@ SOURCE = sys.argv[1] if len(sys.argv) > 1 else "data/sdoc-hackathon-bundle"
 
 
 def main():
+    load_env()                       # picks up GEMINI_API_KEY from .env
+    print(f"   {describe()}\n")
+
     inbox = Inbox(SOURCE)
     emails = inbox.emails()
     print(f"{len(emails)} emails from {SOURCE}\n")
