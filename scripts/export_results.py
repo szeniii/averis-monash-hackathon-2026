@@ -88,7 +88,7 @@ def main():
     print(f"\n   statuses       {dict(statuses)}")
     print(f"   review reasons {dict(reasons)}")
     print(f"\n{statuses.get('NEEDS_REVIEW', 0)} cases are waiting for a human.")
-    print("Review them:  python scripts/serve_review.py")
+    print("Review them in the app:  uvicorn web.app:app")
 
 
 if __name__ == "__main__":
