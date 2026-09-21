@@ -28,7 +28,9 @@ import time
 
 from sdoc.schemas import ExtractedField, FIELDS
 
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+# .strip(): `set GEMINI_MODEL=x ` on Windows keeps the trailing
+# space, and the API rejects the name as a bad format.
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash").strip()
 CACHE_PATH = pathlib.Path(".cache/extract.json")
 MAX_CHARS = 6000          # a shipping document is far shorter than this
 MAX_RETRIES = 4           # a rate limit is temporary, not fatal

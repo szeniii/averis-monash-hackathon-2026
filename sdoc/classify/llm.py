@@ -32,8 +32,12 @@ import time
 
 from sdoc.schemas import Category
 
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
-BATCH_SIZE = 20
+# .strip(): `set GEMINI_MODEL=x ` on Windows keeps the trailing
+# space, and the API rejects the name as a bad format.
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash").strip()
+# 60: the free tier allows 20 requests per day PER MODEL, and
+# 520 emails at 60 the inbox classifies in 9 calls, leaving room for extraction.
+BATCH_SIZE = 60
 CACHE_PATH = pathlib.Path(".cache/classify.json")
 
 # A 503 ("high demand") or a 429 clears on its own; a bad key never will.
