@@ -24,12 +24,16 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import time
 
 from sdoc.schemas import ExtractedField, FIELDS
 
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 CACHE_PATH = pathlib.Path(".cache/extract.json")
 MAX_CHARS = 6000          # a shipping document is far shorter than this
+MAX_RETRIES = 4           # a rate limit is temporary, not fatal
+BASE_DELAY = 2.0          # seconds, doubled each retry
+MIN_INTERVAL = 0.6        # seconds between calls, to stay under the RPM cap
 
 SYSTEM_PROMPT = """\
 You read shipping documents and report seven fields from each.
@@ -146,7 +150,8 @@ class GeminiExtractor:
         self.cache = _load_cache()
         self._client = None
         self._warned = False
-        self._failed = False
+        self._consecutive_failures = 0
+        self._last_call = 0.0
         self._key = api_key or os.environ.get("GEMINI_API_KEY")
 
     def _client_or_none(self):
@@ -175,32 +180,59 @@ class GeminiExtractor:
         return self._client
 
     def _ask(self, docs: list) -> dict:
-        """-> {path: {field_name: {...}}} for the documents actually answered."""
-        if self._failed:
-            return {}
+        """-> {path: {field_name: {...}}} for the documents actually answered.
+
+        Returns {} on failure. The caller must NOT cache that: an empty
+        answer from a rate limit is not a fact about the document.
+        """
+        if self._consecutive_failures >= 6:
+            return {}                       # the API is properly down
         client = self._client_or_none()
         if client is None:
             return {}
 
         from google.genai import types
 
-        try:
-            response = client.models.generate_content(
-                model=self.model,
-                contents="\n\n".join(_render(d) for d in docs),
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    response_mime_type="application/json",
-                    response_schema=RESPONSE_SCHEMA,
-                    temperature=0.0,
-                ),
-            )
-            payload = json.loads(response.text)
-        except Exception as exc:
-            if not self._failed:
-                self._failed = True
-                print(f"  ! Gemini extraction failed: {exc}")
-                print("    Affected documents will be escalated for review.")
+        # stay under the requests-per-minute cap
+        gap = time.time() - self._last_call
+        if gap < MIN_INTERVAL:
+            time.sleep(MIN_INTERVAL - gap)
+
+        payload = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = client.models.generate_content(
+                    model=self.model,
+                    contents="\n\n".join(_render(d) for d in docs),
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_PROMPT,
+                        response_mime_type="application/json",
+                        response_schema=RESPONSE_SCHEMA,
+                        temperature=0.0,
+                    ),
+                )
+                self._last_call = time.time()
+                payload = json.loads(response.text)
+                self._consecutive_failures = 0
+                break
+            except Exception as exc:
+                self._last_call = time.time()
+                message = str(exc)
+                transient = any(t in message for t in
+                                ("429", "RESOURCE_EXHAUSTED", "503", "500",
+                                 "UNAVAILABLE", "DEADLINE", "timeout", "Timeout"))
+                if transient and attempt < MAX_RETRIES - 1:
+                    wait = BASE_DELAY * (2 ** attempt)
+                    print(f"    rate limited, waiting {wait:.0f}s "
+                          f"(attempt {attempt + 2}/{MAX_RETRIES})")
+                    time.sleep(wait)
+                    continue
+                self._consecutive_failures += 1
+                if self._consecutive_failures <= 3:
+                    print(f"  ! extraction failed: {message[:160]}")
+                return {}
+
+        if payload is None:
             return {}
 
         out = {}
@@ -219,7 +251,8 @@ class GeminiExtractor:
                     "label": row.get("label_in_document"),
                     "confidence": float(row.get("confidence", 0.0)) if present else 0.0,
                 }
-            out[path] = fields
+            if fields:                      # never record an empty answer
+                out[path] = fields
         return out
 
     def __call__(self, *docs) -> dict:
@@ -230,11 +263,13 @@ class GeminiExtractor:
 
         pending = [d for d in docs if d.path not in self.cache]
         if pending:
-            self.cache.update(self._ask(pending))
-            # Documents the model skipped must not be retried forever.
-            for d in pending:
-                self.cache.setdefault(d.path, {})
-            _save_cache(self.cache)
+            answered = self._ask(pending)
+            if answered:
+                # Only real answers are cached. A failed call leaves the
+                # document uncached so the next run retries it, instead of
+                # recording a rate limit as "this document has no fields".
+                self.cache.update(answered)
+                _save_cache(self.cache)
 
         result = {}
         for d in docs:
