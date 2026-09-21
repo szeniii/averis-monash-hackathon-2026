@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shipping Document Verification</title>
+<meta name="description" content="Triage a shipping inbox, compare a Shipping Instruction against a draft Bill of Lading field by field, and escalate to a person when the system will not decide alone.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f6d7a'/%3E%3Cg stroke='%23fff' stroke-width='2.6' stroke-linecap='round'%3E%3Cpath d='M10 9v14'/%3E%3Cpath d='M22 9v14' opacity='.6'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap top-inner">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"></span>
+      <div>
+        <h1>Shipping Document Verification</h1>
+        <p>Triage the inbox, compare the Shipping Instruction against the draft Bill of Lading, escalate what it will not decide alone.</p>
+      </div>
+    </div>
+    <div class="badges">
+      <span class="badge" id="source-badge">inbox: &hellip;</span>
+      <span class="badge" id="engine-badge">engine: &hellip;</span>
+      <span class="badge" id="queue-badge">queue: &hellip;</span>
+    </div>
+  </div>
+</header>
+
+<main class="wrap grid">
+
+  <section class="panel" aria-labelledby="src-h">
+    <h2 id="src-h">Source</h2>
+
+    <div class="tabs" role="tablist">
+      <button class="tab is-on" role="tab" data-tab="inbox">Inbox</button>
+      <button class="tab" role="tab" data-tab="classify">Classify</button>
+      <button class="tab" role="tab" data-tab="demo">Demo</button>
+      <button class="tab" role="tab" data-tab="paste">Paste</button>
+      <button class="tab" role="tab" data-tab="upload">Upload</button>
+    </div>
+
+    <!-- stage 1: the inbox -->
+    <div class="tabpane is-on" data-pane="inbox">
+      <div id="cat-strip" class="cat-strip"></div>
+      <label for="inbox-q">Search</label>
+      <input type="text" id="inbox-q" placeholder="subject, sender or id" autocomplete="off">
+      <p class="hint" id="inbox-count">Loading&hellip;</p>
+      <div id="inbox-list" class="inbox-list"></div>
+    </div>
+
+    <!-- stage 1 on its own -->
+    <div class="tabpane" data-pane="classify">
+      <p class="hint">Paste any email. Stage 1 decides what it is, and whether it goes on to the document check.</p>
+      <label for="cls-subject">Subject</label>
+      <input type="text" id="cls-subject" placeholder="TO CONFIRM DOCS _ 5RSG-00133" autocomplete="off">
+      <label for="cls-body">Body</label>
+      <textarea id="cls-body" rows="8" spellcheck="false" placeholder="Attached are the SI and draft BL. Please check the details and confirm."></textarea>
+      <button class="go" id="run-classify">Classify</button>
+      <div id="classify-out"></div>
+    </div>
+
+    <div class="tabpane" data-pane="demo">
+      <p class="hint">Four pairs, each exercising a different branch of the decision gate.</p>
+      <div id="demo-list" class="demo-list"></div>
+    </div>
+
+    <div class="tabpane" data-pane="paste">
+      <label for="si-text">Shipping Instruction</label>
+      <textarea id="si-text" rows="8" spellcheck="false" placeholder="Shipper: ...&#10;Consignee: ...&#10;Port of Loading (POL): ..."></textarea>
+      <label for="bl-text">Draft Bill of Lading</label>
+      <textarea id="bl-text" rows="8" spellcheck="false" placeholder="SHIPPER: ...&#10;To the Order of: ...&#10;Load Port: ..."></textarea>
+      <button class="go" id="run-paste">Compare</button>
+    </div>
+
+    <div class="tabpane" data-pane="upload">
+      <p class="hint">Accepts .txt, .pdf, .docx and .xlsx, up to 2&nbsp;MB each.</p>
+      <label for="si-file">Shipping Instruction</label>
+      <input type="file" id="si-file" accept=".txt,.pdf,.docx,.xlsx">
+      <label for="bl-file">Draft Bill of Lading</label>
+      <input type="file" id="bl-file" accept=".txt,.pdf,.docx,.xlsx">
+      <button class="go" id="run-upload">Compare</button>
+    </div>
+  </section>
+
+  <section class="panel report" aria-labelledby="rep-h" aria-live="polite">
+    <h2 id="rep-h">Report</h2>
+    <div id="report">
+      <p class="empty">Pick an email from the inbox, or use one of the other tabs. The result appears here.</p>
+    </div>
+  </section>
+
+  <section class="panel wide" aria-labelledby="q-h">
+    <h2 id="q-h">Review queue</h2>
+    <p class="hint">Every case is filed here. Cases the system would not decide stay open until a person confirms, corrects or retries them.</p>
+    <div id="queue"><p class="empty">Nothing yet.</p></div>
+  </section>
+
+</main>
+
+<footer class="wrap foot">
+  <p>Averis &times; Monash Hackathon 2026. Classification, comparison and the decision gate all run server-side in the same pipeline that writes <code>submission.json</code>, so every flag here is reproducible and explainable. <a href="/docs">API docs</a> &middot; <a href="/health">health</a></p>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -76,6 +76,31 @@ def port(value):
     return re.sub(r"\s+", " ", text).strip() or None
 
 
+def port_equal(a, b) -> bool:
+    """Are two normalised port names the same place?
+
+    One document routinely prints more of the address than the other:
+    'PORT KLANG' against 'PORT KLANG, MALAYSIA', 'ROTTERDAM' against
+    'ROTTERDAM, NETHERLANDS'. Comparing those as plain strings reports a
+    discrepancy that is not one, and a false alarm costs as much as a miss.
+
+    port() has already dropped bracketed codes and punctuation, so the
+    values arrive as token lists. Same length compares in full, which keeps
+    'BUSAN SOUTH KOREA' against 'BUSAN JAPAN' a real mismatch. Different
+    lengths hold only when the shorter is a whole-token prefix of the longer,
+    which is exactly the "city, then country" case and nothing else.
+    """
+    if a is None or b is None:
+        return False
+    if a == b:
+        return True
+    ta, tb = a.split(), b.split()
+    if not ta or not tb or len(ta) == len(tb):
+        return False
+    short, long_ = (ta, tb) if len(ta) < len(tb) else (tb, ta)
+    return long_[:len(short)] == short
+
+
 def container_count(value):
     """'6 x 40\\'HC' -> 6 ; 'TEN (10) CONTAINERS' -> 10 ; '3' -> 3."""
     if not value:

@@ -60,6 +60,19 @@ LABEL_LINE = re.compile(r"^(?P<label>[^:|]{1,60})\s*[:|]\s*(?P<value>.*)$")
 BLANK_VALUES = {"", "-", "--", "n/a", "na", "tba", "tbc", "???", "____",
                 "_______", "none", "nil"}
 
+# A ruled blank line is drawn to whatever width fits, so listing placeholder
+# strings literally misses every length nobody happened to write down --
+# "___" and "________" are the same empty box. Judge by the characters.
+_BLANK_CHARS = set("_-?.—– ")
+
+
+def is_blank(value: str) -> bool:
+    """True when a printed value means "not filled in"."""
+    text = (value or "").strip()
+    if text.lower() in BLANK_VALUES:
+        return True
+    return bool(text) and set(text) <= _BLANK_CHARS
+
 
 def normalise_label(label: str) -> str:
     text = unicodedata.normalize("NFKD", label)
@@ -105,7 +118,7 @@ def extract(doc) -> dict:
             continue
 
         value = match.group("value").strip()
-        if value.lower() in BLANK_VALUES:
+        if is_blank(value):
             continue                           # blank is missing, not a value
 
         found[name] = ExtractedField(
@@ -123,3 +136,101 @@ def count(doc) -> int:
     """How many of the seven fields this document yields. Used to decide
     whether a document needs the model."""
     return len(extract(doc))
+
+
+# --- compatibility layer for the review app -------------------------------
+#
+# web/app.py and the tests need a slightly wider surface than the pipeline
+# does: a text-in, dict-out helper and extractor objects with the same
+# __call__ shape as GeminiExtractor. All of it is built on extract() above,
+# so this repo has one label table rather than two.
+#
+# extract_fields() adds one thing extract() deliberately does not: a second
+# pass over lines whose separator was lost in PDF conversion, such as
+# "Port of Loading NHAVA SHEVA, INDIA". It only fills fields the first pass
+# missed. The pipeline does not use it -- HybridExtractor sends those
+# documents to the model instead, which is the stronger reading.
+
+from sdoc.schemas import DocumentExtract          # noqa: E402
+
+# Longest label first, so "shipper exporter" is tried before "shipper".
+_PREFIX_RULES = [
+    (field, re.compile(r"^\s*" + r"\s+".join(map(re.escape, label.split()))
+                       + r"\b[ \t]+(?P<value>\S.*)$", re.I))
+    for label, field in sorted(_LABEL_TO_FIELD.items(),
+                               key=lambda kv: -len(kv[0]))
+]
+
+
+def _extract_separatorless(text: str, already: dict) -> dict:
+    """Fill fields from lines a PDF stripped the colon out of."""
+    found = {}
+    for line in text.splitlines():
+        if not line.strip() or line.startswith((" ", "\t")):
+            continue
+        if ":" in line or "|" in line:
+            continue                       # pass one already had its chance
+        ascii_line = "".join(c for c in line if ord(c) < 128)
+        for field, pattern in _PREFIX_RULES:
+            if field in already or field in found:
+                continue
+            hit = pattern.match(ascii_line)
+            if hit:
+                value = hit.group("value").strip()
+                if not is_blank(value):
+                    found[field] = ExtractedField(
+                        field=field, raw_value=value, confidence=0.75,
+                        label_found=None, snippet=line.strip())
+                break
+    return found
+
+
+def extract_fields(text: str) -> dict:
+    """Plain text -> {field: {"value", "label", "confidence"}}.
+
+    A blank or placeholder value yields no entry at all, matching extract():
+    a field that is not there is missing, which is not the same as a value.
+    """
+    doc = DocumentExtract(path="<text>", doc_role="UNKNOWN")
+    doc.text = text or ""
+    fields = extract(doc)
+    fields.update(_extract_separatorless(doc.text, fields))
+    return {name: {"value": f.raw_value, "label": f.label_found,
+                   "confidence": f.confidence}
+            for name, f in fields.items()}
+
+
+class LabelExtractor:
+    """Offline drop-in for GeminiExtractor. No key, no network, no quota."""
+
+    name = "labels"
+
+    def __call__(self, *docs) -> dict:
+        result = {}
+        for doc in docs:
+            if doc is None or not doc.read_ok or not doc.text:
+                continue
+            fields = extract(doc)
+            fields.update(_extract_separatorless(doc.text, fields))
+            result[doc.path] = fields
+        return result
+
+
+class ChainExtractor:
+    """Try each extractor in turn; keep the first that answers per document."""
+
+    def __init__(self, *extractors):
+        self.extractors = [e for e in extractors if e is not None]
+
+    def __call__(self, *docs) -> dict:
+        merged = {}
+        remaining = [d for d in docs if d is not None]
+        for extractor in self.extractors:
+            if not remaining:
+                break
+            answered = extractor(*remaining) or {}
+            for path, fields in answered.items():
+                if fields and path not in merged:
+                    merged[path] = fields
+            remaining = [d for d in remaining if d.path not in merged]
+        return merged

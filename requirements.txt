@@ -13,3 +13,7 @@ google-genai==2.24.0
 # Review interface
 fastapi==0.141.1
 uvicorn==0.53.0
+python-multipart==0.0.20  # file uploads in the triage app
+
+# Dev only
+pytest==8.3.4
