@@ -117,7 +117,12 @@ def extract(doc) -> dict:
         if not name or name in found:          # unknown, or already have it
             continue
 
-        value = match.group("value").strip()
+        # A spreadsheet row arrives as "Label | value | address | ...", so
+        # everything past the next cell boundary is the address block. Left
+        # in, it makes two different companies look alike: the addresses are
+        # identical and they are longer than the names, so the similarity
+        # score they produce drowns out the names it is supposed to compare.
+        value = match.group("value").split("|", 1)[0].strip()
         if is_blank(value):
             continue                           # blank is missing, not a value
 

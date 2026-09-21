@@ -79,8 +79,27 @@ GENERAL_PATTERNS = [
 # SI_REQUEST outranks BL_COMPARISON because SI traffic routinely mentions a
 # draft BL ("please revert with draft BL once available") while a genuine
 # comparison request rarely mentions preparing an SI.
+# Machine-sent notices and HR traffic mention billing, freight and BLs in
+# passing, so they match the invoice and comparison patterns even though
+# nobody is asking for anything. These markers say "this was not written by
+# hand", which settles the category before the topic words get a vote --
+# which is why they are tested before the topic lists rather than after.
+NOTICE_PATTERNS = [
+    r"this is an automated notification",
+    r"\bautomated (notification|notice|message|reminder)\b",
+    r"_rpa_",
+    r"\btime off request\b",
+    r"\bapproval required\b",
+    r"out of office",
+    r"public holiday", r"\bholiday notice\b",
+    r"system maintenance",
+    r"\bberthing report\b",
+    r"\bupdate summary\b",
+]
+
 _ORDER = [
     (Category.SPAM, SPAM_PATTERNS, 0.95),
+    (Category.GENERAL, NOTICE_PATTERNS, 0.92),
     (Category.GENERAL, GENERAL_PATTERNS, 0.80),
     (Category.SI_REQUEST, SI_REQUEST_PATTERNS, 0.88),
     (Category.BL_COMPARISON, BL_COMPARISON_PATTERNS, 0.90),
