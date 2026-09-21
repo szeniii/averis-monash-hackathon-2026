@@ -41,13 +41,20 @@ _emails = {}
 
 
 def _load_state() -> None:
-    """Load pipeline output and the inbox into memory."""
+    """Load pipeline output and the inbox into memory.
+
+    The dataset is not committed, so on a deployed host data/ is usually
+    absent. results.json alone is enough to review cases -- it carries the
+    comparisons and the escalation reasons. Only the email body and the
+    source-document viewer need the raw inbox, so its absence degrades those
+    two panels rather than stopping the server from starting.
+    """
     global _results, _emails
-    if results_io.exists(RESULTS_PATH):
-        _results = results_io.load(RESULTS_PATH)
-    else:
-        _results = {}
-    _emails = {e["email_id"]: e for e in _inbox.emails()}
+    _results = results_io.load(RESULTS_PATH) if results_io.exists(RESULTS_PATH) else {}
+    try:
+        _emails = {e["email_id"]: e for e in _inbox.emails()}
+    except Exception:                                     # noqa: BLE001
+        _emails = {}
 
 
 _load_state()
@@ -204,7 +211,9 @@ def get_documents(email_id: str):
     """The raw SI and BL text, so a reviewer can check the machine's reading."""
     email = _emails.get(email_id)
     if email is None:
-        raise HTTPException(404, f"{email_id} not found")
+        # No inbox on this host -- the case itself is still reviewable.
+        return {"email_id": email_id, "documents": [],
+                "note": "source documents are not available on this deployment"}
 
     documents = []
     for path in email.get("attachments", []):

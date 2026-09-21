@@ -24,7 +24,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("source", nargs="?", default="data")
     parser.add_argument("--no-llm", action="store_true",
-                        help="skip Gemini; rules only, makes no API calls")
+                        help="skip Gemini entirely; makes no API calls")
+    parser.add_argument("--rules-classify", action="store_true",
+                        help="classify with rules only, spend every API "
+                             "request on reading documents")
+    parser.add_argument("--group", type=int, default=120,
+                        help="documents per extraction request (default 10). "
+                             "Higher spends fewer requests; lower is safer "
+                             "if large prompts fail.")
     parser.add_argument("--results", default="results.json")
     parser.add_argument("--submission", default="submission.json")
     args = parser.parse_args()
@@ -34,20 +41,42 @@ def main():
     print(f"{len(emails)} emails from {args.source}\n")
 
     classifier = extractor = None
-    if not args.no_llm:
+
+    if args.no_llm:
+        print("1. classifying (rules only, no API calls)")
+    elif args.rules_classify:
+        # The rule classifier scores 0.947 macro-F1 on this inbox, and
+        # stage 1 is 30% of the score. Field extraction feeds end-to-end,
+        # which is 50% -- and it cannot run at all without the API. When
+        # requests are scarce, every one of them belongs to extraction.
+        from sdoc.extract.hybrid import HybridExtractor
+        from sdoc.extract.llm import GeminiExtractor
+        print("1. classifying (rules only - saving quota for extraction)")
+        extractor = HybridExtractor(GeminiExtractor())
+    else:
         from sdoc.classify.llm import GeminiClassifier
         from sdoc.extract.llm import GeminiExtractor
         print("1. classifying")
+        from sdoc.extract.hybrid import HybridExtractor
         classifier = GeminiClassifier()
         classifier.warm(emails)
-        extractor = GeminiExtractor()
-    else:
-        print("1. classifying (rules only)")
+        extractor = HybridExtractor(GeminiExtractor())
 
-    print("\n2. reading documents and comparing")
+    # Read every document up front, several per request. The per-email loop
+    # below then runs entirely from the extractor's cache and makes no calls
+    # of its own -- ~26 requests instead of ~126.
+    if extractor is not None:
+        from sdoc.extract import warm
+        print("\n2. reading documents")
+        warm.warm(inbox, emails, extractor, group_size=args.group)
+
+    if extractor is not None and hasattr(extractor, "summary"):
+        print(f"  {extractor.summary()}")
+
+    print("\n3. comparing")
     results = pipeline.run_all(inbox, classifier=classifier, extractor=extractor)
 
-    print("\n3. writing output")
+    print("\n4. writing output")
     results_io.dump(results, args.results)
     submission.write(results, args.submission)
     print(f"   {args.results}     (full evidence, for the review interface)")

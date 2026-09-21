@@ -10,6 +10,7 @@ If it is missing, build it with:
     python scripts/export_results.py
 """
 import argparse
+import os
 import pathlib
 import sys
 
@@ -17,11 +18,18 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from sdoc import results_io     # noqa: E402
 
+# Render (and most hosts) assign the port at runtime and require the server to
+# listen on every interface -- binding 127.0.0.1 makes the app unreachable and
+# the deploy fails its health check.
+ON_HOST = bool(os.environ.get("PORT"))
+DEFAULT_HOST = "0.0.0.0" if ON_HOST else "127.0.0.1"
+DEFAULT_PORT = int(os.environ.get("PORT", 8000))
+
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--host", default=DEFAULT_HOST)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = parser.parse_args()
 
     if not results_io.exists():
