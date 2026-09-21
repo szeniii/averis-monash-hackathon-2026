@@ -1,0 +1,16 @@
+# Pipeline
+pdfplumber==0.11.4
+python-docx==1.1.2
+openpyxl==3.1.5
+
+# Web service
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# Stage 1 + 2 model calls. Optional at runtime: without GEMINI_API_KEY the
+# pipeline falls back to the rule classifier and the label extractor.
+google-genai==0.8.0
+
+# Dev only
+pytest==8.3.4

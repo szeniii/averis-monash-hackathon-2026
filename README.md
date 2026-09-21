@@ -119,33 +119,38 @@ Install the client:
 pip install google-genai
 ```
 
-Then make the key available as an environment variable. **macOS / Linux:**
+Then put the key in a `.env` file in the repo root. `sdoc/config.py` reads
+it at startup, and `.gitignore` keeps `.env` out of git:
 
 ```bash
-export GEMINI_API_KEY=your-key-here
+cp .env.example .env        # PowerShell: Copy-Item .env.example .env
 ```
 
-**Windows (Command Prompt):**
+Open `.env` and replace `your-key-here` with your real key:
 
 ```
-set GEMINI_API_KEY=your-key-here
+GEMINI_API_KEY=AIza...
 ```
 
-**Windows (PowerShell):**
+A real environment variable still wins over the file, which is how Render
+supplies the key in production. If you would rather export it by hand:
 
+```bash
+export GEMINI_API_KEY=your-key-here          # macOS / Linux
+```
 ```powershell
-$env:GEMINI_API_KEY = "your-key-here"
+$env:GEMINI_API_KEY = "your-key-here"        # Windows PowerShell, this window only
 ```
 
-This only applies to the terminal window you type it in — open a new one and
-you must set it again. If the pipeline prints
-`! GEMINI_API_KEY is not set`, that is what happened.
+Both entry points print which of the two they found on startup, never the
+key itself:
 
-Optionally pin a different model (the default is `gemini-3.6-flash`):
-
-```bash
-export GEMINI_MODEL=gemini-3.6-pro
 ```
+GEMINI_API_KEY found (.env or environment), model gemini-3.6-flash
+```
+
+Optionally pin a different model by adding `GEMINI_MODEL` to `.env`. The
+default is `gemini-3.6-flash`.
 
 If the key is missing or the API is unavailable the run does not fail — it
 falls back to the offline rule classifier and reports `decided_by: "rule"`
@@ -159,12 +164,20 @@ so the degradation is visible in the output.
 .
 ├── sdoc/                  # the pipeline package
 │   ├── schemas.py         # shared data contract — all stages import this
+│   ├── config.py          # .env loading and key lookup
 │   ├── loader.py          # dataset access (supplied by organisers)
 │   ├── pipeline.py        # stage orchestration
 │   ├── submission.py      # results -> submission.json
 │   ├── classify/          # stage 1: email classification
 │   ├── extract/           # stage 2: document field extraction
-│   └── compare/           # stage 3: normalisation + field comparison
+│   │   ├── llm.py         #   Gemini, reads meaning
+│   │   └── labels.py      #   offline fallback, matches label text
+│   ├── compare/           # stage 3: normalisation + field comparison
+│   └── decide/            # stage 4: report or escalate
+├── web/                   # the review app served at the deployed URL
+│   ├── app.py             # FastAPI: compare, review queue, health
+│   ├── demo_cases.py      # built-in pairs, so the demo needs no dataset
+│   └── static/            # single-page front end
 ├── scripts/               # setup_data.sh, plus pipeline entry points
 ├── tests/                 # unit tests
 ├── docs/                  # architecture notes and design decisions
@@ -195,6 +208,55 @@ Scoring needs the organisers' evaluation server running locally:
 cd <the docker distribution folder>
 docker compose up --build        # serves http://localhost:8080
 ```
+
+---
+
+## The review app
+
+The scoreboard cannot show the part of the use case that matters most: the
+report a person actually reads, and what happens when the system will not
+decide on its own. `web/` is that surface.
+
+```bash
+pip install -r requirements.txt
+uvicorn web.app:app --reload        # http://localhost:8000
+```
+
+Three ways in: four built-in demo pairs, a paste box, or an upload of two
+files (`.txt`, `.pdf`, `.docx`, `.xlsx`). Every comparison lands in a review
+queue. A case the gate escalated stays open until a person supplies the value
+it could not read, at which point the case is decided again from the
+corrected evidence.
+
+It runs with no API key. Stage 2 falls back to `sdoc/extract/labels.py`,
+which matches label text rather than reading meaning; set `GEMINI_API_KEY`
+and the model takes over, per document, with the label reader still catching
+anything the API could not answer.
+
+| Route | What it does |
+|---|---|
+| `GET /` | the app |
+| `GET /health` | liveness, and which extraction engine is active |
+| `POST /api/compare` | compare two pasted documents |
+| `POST /api/compare/upload` | compare two uploaded files |
+| `GET /api/cases` | the review queue |
+| `POST /api/cases/{id}/resolve` | a person supplies a value, case re-decided |
+| `POST /api/cases/{id}/confirm` | a person accepts the result |
+| `GET /docs` | generated API reference |
+
+The queue is in-memory, which is the right trade for a demonstration surface:
+no database to run, and a restart simply clears it.
+
+### Deploying
+
+`render.yaml` is a Render blueprint. In Render, **New > Blueprint**, point it
+at this repo and pick the branch; it builds from `requirements.txt` and
+serves `uvicorn web.app:app`. Set `GEMINI_API_KEY` in the dashboard rather
+than in the file. The free plan sleeps after inactivity, so the first request
+after a quiet spell takes about thirty seconds.
+
+`Procfile` carries the same start command, so Railway and Fly work without
+changes.
 
 ---
 

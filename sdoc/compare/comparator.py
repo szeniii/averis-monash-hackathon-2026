@@ -9,7 +9,7 @@ The SI is the reference. The BL is checked against it.
 """
 from __future__ import annotations
 
-from sdoc.compare.normalize import normalize, party_similarity
+from sdoc.compare.normalize import normalize, party_similarity, port_equal
 from sdoc.schemas import FIELDS, FieldComparison, FieldStatus
 
 # Party names: above HIGH it's the same company, below LOW it's a different
@@ -17,6 +17,7 @@ from sdoc.schemas import FIELDS, FieldComparison, FieldStatus
 PARTY_SAME = 0.95
 PARTY_DIFFERENT = 0.70
 PARTY_FIELDS = {"shipper", "consignee", "notify_party"}
+PORT_FIELDS = {"port_of_loading", "port_of_discharge"}
 
 WEIGHT_TOLERANCE_KG = 0.5
 
@@ -50,6 +51,13 @@ def _compare_one(field_name, si_field, bl_field) -> FieldComparison:
     if field_name == "gross_weight_kg":
         cmp.status = (FieldStatus.MATCH
                       if abs(si_value - bl_value) <= WEIGHT_TOLERANCE_KG
+                      else FieldStatus.MISMATCH)
+        return cmp
+
+    if field_name in PORT_FIELDS:
+        # One side often prints the country and the other does not. That is
+        # not a discrepancy -- see normalize.port_equal.
+        cmp.status = (FieldStatus.MATCH if port_equal(si_value, bl_value)
                       else FieldStatus.MISMATCH)
         return cmp
 
