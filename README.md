@@ -60,6 +60,7 @@ The SI is the source of truth for the comparison.
 
 - Python 3.10+
 - The hackathon data bundle (`sdoc-hackathon-bundle`)
+- A Google Gemini API key ([Google AI Studio](https://aistudio.google.com/app/apikey) → **Get API key**)
 
 ### 1. Clone
 
@@ -107,6 +108,49 @@ bash scripts/setup_data.sh
 
 That's the whole setup — the `✓` line above confirms it worked.
 
+### 4. Configure the AI
+
+Classification and field extraction run on Gemini, so the pipeline needs an
+API key. Never put the key in a source file — it would end up on GitHub.
+
+Install the client:
+
+```bash
+pip install google-genai
+```
+
+Then make the key available as an environment variable. **macOS / Linux:**
+
+```bash
+export GEMINI_API_KEY=your-key-here
+```
+
+**Windows (Command Prompt):**
+
+```
+set GEMINI_API_KEY=your-key-here
+```
+
+**Windows (PowerShell):**
+
+```powershell
+$env:GEMINI_API_KEY = "your-key-here"
+```
+
+This only applies to the terminal window you type it in — open a new one and
+you must set it again. If the pipeline prints
+`! GEMINI_API_KEY is not set`, that is what happened.
+
+Optionally pin a different model (the default is `gemini-3.6-flash`):
+
+```bash
+export GEMINI_MODEL=gemini-3.6-pro
+```
+
+If the key is missing or the API is unavailable the run does not fail — it
+falls back to the offline rule classifier and reports `decided_by: "rule"`
+so the degradation is visible in the output.
+
 ---
 
 ## Project structure
@@ -131,7 +175,7 @@ That's the whole setup — the `✓` line above confirms it worked.
 
 ## Usage
 
-_Pipeline commands land as the stages are implemented._
+Set `GEMINI_API_KEY` in your terminal first (see Setup step 4), then:
 
 ```bash
 # Run the full inbox and write submission.json
@@ -139,6 +183,17 @@ python3 scripts/run_pipeline.py
 
 # Score the output against the local evaluation server
 python3 scripts/score.py submission.json
+```
+
+Classification results are cached in `.cache/classify.json`, so re-running
+while tuning the later stages costs no API calls. Delete that file to force a
+fresh classification pass.
+
+Scoring needs the organisers' evaluation server running locally:
+
+```bash
+cd <the docker distribution folder>
+docker compose up --build        # serves http://localhost:8080
 ```
 
 ---
