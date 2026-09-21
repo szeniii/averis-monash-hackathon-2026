@@ -6,12 +6,16 @@ What it exposes is the part of the use case a score cannot show: the
 seven-field report side by side, and a review queue where a person confirms
 or corrects a case the system would not decide on its own.
 
-The comparison and decision stages are pure Python, so everything here works
-with no API key. Setting GEMINI_API_KEY upgrades stage 2 from label matching
-to model reading; the chain falls back per document, never as a whole run.
+Everything here works with no API key. Classification runs on rules, and
+extraction parses locally first -- GEMINI_API_KEY only adds the model for
+documents the label table cannot read, one batch at a time.
+
+Nothing on the request path makes a blocking call it can avoid: a click that
+takes twenty seconds reads as broken, whatever it returns.
 """
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import sys
@@ -34,7 +38,7 @@ from sdoc.classify import rules                                  # noqa: E402
 from sdoc.compare.comparator import compare                      # noqa: E402
 from sdoc.decide.gate import decide                              # noqa: E402
 from sdoc.documents import reader                                # noqa: E402
-from sdoc.extract.labels import ChainExtractor, LabelExtractor   # noqa: E402
+from sdoc.extract.hybrid import HybridExtractor                  # noqa: E402
 from sdoc.loader import Inbox                                    # noqa: E402
 from sdoc.schemas import (CaseResult, Category, DocumentExtract,  # noqa: E402
                           ExtractedField, FIELDS)
@@ -52,15 +56,20 @@ app = FastAPI(title="Shipping Document Verification",
 # --- extraction engine ----------------------------------------------------
 
 def _build_extractor():
-    """Gemini when a key is present, label matching either way."""
-    labels = LabelExtractor()
+    """Parse locally first; send the model only what the parse cannot read.
+
+    HybridExtractor is the pipeline's own extractor, so this screen and
+    submission.json come out of the same code. It also decides the latency:
+    a document the label table can read costs nothing, and on this corpus
+    that is roughly nine documents in ten.
+    """
     if not os.environ.get("GEMINI_API_KEY"):
-        return labels, "labels"
+        return HybridExtractor(None), "labels"
     try:
         from sdoc.extract.llm import GeminiExtractor
-        return ChainExtractor(GeminiExtractor(), labels), "gemini+labels"
+        return HybridExtractor(GeminiExtractor()), "hybrid (local + gemini)"
     except Exception:
-        return labels, "labels"
+        return HybridExtractor(None), "labels"
 
 
 EXTRACTOR, ENGINE = _build_extractor()
@@ -88,28 +97,54 @@ def _build_inbox():
 INBOX, INBOX_LABEL, INBOX_IS_REAL = _build_inbox()
 
 
-def _build_classifier():
-    """Gemini when a key is present; the rule classifier is always the net."""
-    if not os.environ.get("GEMINI_API_KEY"):
-        return None
-    try:
-        from sdoc.classify.llm import GeminiClassifier
-        return GeminiClassifier()
-    except Exception:
-        return None
+class CachedClassifier:
+    """Stage 1 for the interactive path. Never makes a live API call.
+
+    Calling Gemini per click cost 8 to 26 seconds a request, because a
+    failed classification is not cached and so every click retried it. A
+    button that looks dead for twenty seconds is worse than a slightly less
+    clever label, and the rule classifier is not much less clever: it is what
+    every one of those slow requests actually fell back to.
+
+    So: read what a full pipeline run already decided, and let the rules
+    handle anything that run did not cover. Both answer in microseconds.
+    """
+
+    def __init__(self):
+        self.cache = {}
+        try:
+            from sdoc.classify.llm import CACHE_PATH
+            if CACHE_PATH.exists():
+                self.cache = json.loads(CACHE_PATH.read_text())
+        except Exception:
+            self.cache = {}
+
+    @property
+    def mode(self) -> str:
+        return f"cached llm ({len(self.cache)}) + rules" if self.cache else "rules"
+
+    def __call__(self, email: dict):
+        """-> (Category, confidence, source) or (None, 0.0, None) for rules."""
+        hit = self.cache.get(email.get("email_id"))
+        if not hit:
+            return None, 0.0, None
+        try:
+            return (Category(hit["category"]),
+                    float(hit.get("confidence", 0.5)), "llm (cached)")
+        except (KeyError, ValueError):
+            return None, 0.0, None
 
 
-CLASSIFIER = _build_classifier()
+CLASSIFIER = CachedClassifier()
 
 _CLASS_CACHE: dict = {}
 
 
 def _classify(email: dict) -> tuple:
-    """Same order the pipeline uses: model first, rules as the fallback.
+    """Rule classification. Regex-fast, free, and deterministic.
 
-    Listing the whole inbox runs on rules only -- they are regex-fast and
-    free, so opening the page never costs an API call. The model is used
-    when a single email is opened or pasted in.
+    Nothing that has already been decided should be re-decided on a click,
+    so listing the inbox never costs an API call.
     """
     category, confidence, decided_by = rules.classify(email)
     if category is None:
@@ -271,7 +306,8 @@ def _run(si_doc, bl_doc, case_id: str | None = None) -> dict:
 
 @app.get("/health")
 def health():
-    return {"ok": True, "engine": ENGINE, "cases_held": len(CASES),
+    return {"ok": True, "engine": ENGINE, "classifier": CLASSIFIER.mode,
+            "cases_held": len(CASES),
             "gemini_key_present": bool(os.environ.get("GEMINI_API_KEY")),
             "fields": FIELDS}
 

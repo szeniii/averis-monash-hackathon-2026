@@ -212,7 +212,15 @@ docker compose up --build        # serves http://localhost:8080
 
 ---
 
-## The review app
+## The app
+
+**This is the interface.** `web/` is the single demo surface for this project.
+The `humanreview` and `frontend-api` branches hold earlier, incomplete
+attempts at the same screen and are not merged deliberately — do not deploy
+them.
+
+Live: **https://averis-monash-hackathon-2026.onrender.com**
+
 
 The scoreboard cannot show the part of the use case that matters most: the
 report a person actually reads, and what happens when the system will not
@@ -222,6 +230,19 @@ decide on its own. `web/` is that surface.
 pip install -r requirements.txt
 uvicorn web.app:app --reload        # http://localhost:8000
 ```
+
+### What the live instance shows
+
+The dataset is gitignored, so the deployed instance cannot browse the
+organisers' 520 emails. It falls back to `web/demo_inbox.py`, thirteen
+emails written for this repo covering all five categories. Nothing in them
+is hard-coded to a category — the same classifier reads them as reads the
+real inbox, and a test asserts it sorts all five correctly.
+
+Run it locally with `data/` in place and the identical screens show the full
+520, with the real category spread.
+
+### Using it
 
 It opens on the **inbox**, which is stage 1 made visible: every email with
 its predicted category, filterable by category, searchable by subject or
@@ -263,6 +284,17 @@ anything the API could not answer.
 
 The queue is in-memory, which is the right trade for a demonstration surface:
 no database to run, and a restart simply clears it.
+
+### Latency
+
+Nothing on the request path makes a blocking API call it can avoid.
+Classification runs on rules, which score 0.947 macro-F1 on this inbox, and
+extraction parses locally first so only documents the label table cannot
+read reach the model. A click costs single-digit milliseconds.
+
+An earlier version called Gemini per click to classify. Each request took 8
+to 26 seconds, retried on failure, and then fell back to the rules anyway —
+so it paid twenty seconds for the answer it would have given instantly.
 
 ### Deploying
 

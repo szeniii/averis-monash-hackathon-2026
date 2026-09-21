@@ -40,10 +40,23 @@ def main():
     emails = inbox.emails()
     print(f"{len(emails)} emails from {args.source}\n")
 
+    # An empty source is a setup mistake, not a result. Running on it used to
+    # write {} over results.json, which is how a good file was lost once.
+    if not emails:
+        print(f"! no emails found in {args.source!r} - nothing to do.")
+        print(f"  Expected {args.source}/inbox/ to hold the email records.")
+        print("  Set the dataset up first:  bash scripts/setup_data.sh")
+        return 1
+
     classifier = extractor = None
 
     if args.no_llm:
+        # Local parsing still reads most of this corpus, so "no API" should
+        # not mean "no extraction". Without this the run compares nothing and
+        # every case escalates as unreadable.
+        from sdoc.extract.hybrid import HybridExtractor
         print("1. classifying (rules only, no API calls)")
+        extractor = HybridExtractor(None)
     elif args.rules_classify:
         # The rule classifier scores 0.947 macro-F1 on this inbox, and
         # stage 1 is 30% of the score. Field extraction feeds end-to-end,
@@ -76,6 +89,11 @@ def main():
     print("\n3. comparing")
     results = pipeline.run_all(inbox, classifier=classifier, extractor=extractor)
 
+    if not results:
+        print(f"\n! the pipeline produced no results - refusing to overwrite "
+              f"{args.results} and {args.submission}.")
+        return 1
+
     print("\n4. writing output")
     results_io.dump(results, args.results)
     submission.write(results, args.submission)
@@ -92,4 +110,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)
