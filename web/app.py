@@ -41,7 +41,7 @@ from sdoc.documents import reader                                # noqa: E402
 from sdoc.extract.hybrid import HybridExtractor                  # noqa: E402
 from sdoc.loader import Inbox                                    # noqa: E402
 from sdoc.schemas import (CaseResult, Category, DocumentExtract,  # noqa: E402
-                          ExtractedField, FIELDS, Status)
+                          ExtractedField, FIELDS)
 from web import demo_cases                                       # noqa: E402
 from web.demo_inbox import DemoInbox                             # noqa: E402
 
@@ -188,49 +188,6 @@ def _summarise_email(email: dict) -> dict:
 # Review queue. In-memory on purpose: this is a demonstration surface, and
 # a restart losing the queue is the correct trade for having no database.
 CASES: dict = {}
-
-
-def _seed_review_queue() -> int:
-    """Put the escalated cases from the last batch run into the queue.
-
-    Without this the queue starts empty and a reviewer has to go and find
-    the cases that need them, which inverts the point of escalating. The
-    run already recorded what it refused to decide, so those cases are
-    waiting when the app opens.
-
-    Documents are not stored in results.json, so a seeded case shows the
-    field comparisons recorded at run time; Retry re-reads the originals.
-    Never fatal: no results.json just means an empty queue, as before.
-    """
-    try:
-        from sdoc import results_io
-        if not results_io.exists():
-            return 0
-        loaded = results_io.load()
-    except Exception as exc:                        # noqa: BLE001
-        print(f"  review queue: could not read results.json ({exc})")
-        return 0
-
-    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    seeded = 0
-    for case in loaded.values():
-        if case.status is not Status.NEEDS_REVIEW:
-            continue
-        CASES.setdefault(case.email_id, {
-            "case": case,
-            "si_doc": None,
-            "bl_doc": None,
-            "created_at": stamp,
-            "corrections": [],
-            "email": None,
-        })
-        seeded += 1
-    return seeded
-
-
-_SEEDED = _seed_review_queue()
-if _SEEDED:
-    print(f"  review queue: {_SEEDED} escalated cases loaded from results.json")
 
 
 # --- request bodies -------------------------------------------------------
