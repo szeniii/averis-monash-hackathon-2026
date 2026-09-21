@@ -17,6 +17,15 @@ import re
 
 from sdoc.schemas import Category
 
+# --- spam: the sender is the strongest signal we have ----------------------
+# Language alone misses the spam that imitates shipping vocabulary. Every
+# email from these throwaway domains is spam; no legitimate counterparty
+# uses them.
+SPAM_DOMAINS = {
+    "webmail-verify.co", "secure-mailbox.org", "parcel-track.co",
+    "logistics-deals.biz", "prize-claims.info", "crypto-invest.net",
+}
+
 # --- spam: consumer-scam language that never appears in shipping ops -------
 SPAM_PATTERNS = [
     r"\bcongratulation", r"\byou have won\b", r"\bprize\b", r"\blottery\b",
@@ -61,12 +70,21 @@ GENERAL_PATTERNS = [
     r"\bvessel schedule\b", r"\breminder\b.*\bdeadline\b",
 ]
 
+# Order is priority: the first category whose pattern matches wins.
+#
+# GENERAL sits high because its patterns are narrow and specific (berthing
+# reports, RPA notices, holiday announcements). Left at the bottom it lost
+# those emails to INVOICE_QUERY, which matches the bare word "billing".
+#
+# SI_REQUEST outranks BL_COMPARISON because SI traffic routinely mentions a
+# draft BL ("please revert with draft BL once available") while a genuine
+# comparison request rarely mentions preparing an SI.
 _ORDER = [
     (Category.SPAM, SPAM_PATTERNS, 0.95),
-    (Category.BL_COMPARISON, BL_COMPARISON_PATTERNS, 0.90),
-    (Category.SI_REQUEST, SI_REQUEST_PATTERNS, 0.88),
-    (Category.INVOICE_QUERY, INVOICE_PATTERNS, 0.88),
     (Category.GENERAL, GENERAL_PATTERNS, 0.80),
+    (Category.SI_REQUEST, SI_REQUEST_PATTERNS, 0.88),
+    (Category.BL_COMPARISON, BL_COMPARISON_PATTERNS, 0.90),
+    (Category.INVOICE_QUERY, INVOICE_PATTERNS, 0.88),
 ]
 
 
@@ -89,11 +107,29 @@ def _body_without_thread(body: str) -> str:
     return body[:cut]
 
 
+def _normalise(text: str) -> str:
+    """Lowercase, drop any Re:/Fwd: prefix, and turn underscores into spaces.
+
+    These subjects use underscores as separators throughout -- "SI NEEDED_",
+    "PO_25_2186", "RE_ TO CONFIRM DOCS _ 5AAT". An underscore is a word
+    character, so \\b never fires next to one and `\\bsi needed\\b` silently
+    fails to match "SI NEEDED_". That one detail was misrouting 34 SI
+    requests into the document pipeline.
+    """
+    text = re.sub(r"^\s*(re|fw|fwd)[_:\s]+", "", (text or "").lower())
+    return re.sub(r"_+", " ", text)
+
+
 def classify(email: dict):
     """-> (Category | None, confidence, "rule" | None)"""
-    subject = (email.get("subject") or "").lower()
-    body = _body_without_thread(email.get("body") or "").lower()
+    subject = _normalise(email.get("subject"))
+    body = _normalise(_body_without_thread(email.get("body") or ""))
     has_attachments = bool(email.get("attachments"))
+
+    # Sender domain beats any wording: spam that quotes shipping jargon must
+    # never reach the document pipeline.
+    if email.get("from", "").split("@")[-1].strip().lower() in SPAM_DOMAINS:
+        return Category.SPAM, 0.99, "rule"
 
     # Subject carries the strongest signal; weight it by checking it first.
     for scope, weight in ((subject, 1.0), (body, 0.92)):

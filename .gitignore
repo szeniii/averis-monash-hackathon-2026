@@ -27,3 +27,8 @@ frontend/.vite/
 .DS_Store
 .vscode/
 .idea/
+
+# generated state
+.cache/
+results.json
+review_decisions.json

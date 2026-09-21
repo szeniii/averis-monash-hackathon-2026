@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Document Review Queue</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#fff; --ink:#1b1f24; --muted:#6b7480;
+    --line:#e3e6ea; --accent:#1f6feb; --bad:#c0392b; --good:#1a7f4b;
+    --warn:#b7791f; --badbg:#fdeceb; --goodbg:#e9f6ef; --warnbg:#fdf5e4;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+       background:var(--bg);color:var(--ink)}
+  header{background:var(--panel);border-bottom:1px solid var(--line);
+         padding:14px 20px;display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  .stats{display:flex;gap:18px;margin-left:auto;flex-wrap:wrap}
+  .stat b{display:block;font-size:18px;line-height:1.1}
+  .stat span{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+  button{font:inherit;border:1px solid var(--line);background:var(--panel);
+         border-radius:6px;padding:7px 13px;cursor:pointer;color:var(--ink)}
+  button:hover{border-color:var(--accent);color:var(--accent)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{opacity:.9;color:#fff}
+  button.ghost{background:transparent}
+  main{display:grid;grid-template-columns:330px 1fr;gap:16px;padding:16px;
+       align-items:start}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px}
+  .tabs{display:flex;border-bottom:1px solid var(--line)}
+  .tabs button{border:0;border-radius:0;flex:1;padding:10px 4px;font-size:12px;
+               color:var(--muted);border-bottom:2px solid transparent}
+  .tabs button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+  #queue{max-height:calc(100vh - 170px);overflow:auto}
+  .item{padding:11px 14px;border-bottom:1px solid var(--line);cursor:pointer}
+  .item:hover{background:#fafbfc}
+  .item.on{background:#eef4ff;box-shadow:inset 3px 0 0 var(--accent)}
+  .item .id{font-weight:600;font-size:12px}
+  .item .subj{color:var(--muted);font-size:12px;margin-top:2px;
+               overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chip{display:inline-block;font-size:10px;padding:2px 7px;border-radius:99px;
+        text-transform:uppercase;letter-spacing:.03em;font-weight:600}
+  .chip.rev{background:var(--warnbg);color:var(--warn)}
+  .chip.mis{background:var(--badbg);color:var(--bad)}
+  .chip.ok{background:var(--goodbg);color:var(--good)}
+  .chip.done{background:#eceff3;color:var(--muted)}
+  .pad{padding:18px 20px}
+  .meta{color:var(--muted);font-size:12px;margin-top:3px}
+  .banner{border-radius:8px;padding:12px 14px;margin:16px 0;font-size:13px}
+  .banner.rev{background:var(--warnbg);border:1px solid #f0dcb0}
+  .banner.mis{background:var(--badbg);border:1px solid #f3cdc9}
+  .banner.ok{background:var(--goodbg);border:1px solid #c6e6d5}
+  .banner b{display:block;margin-bottom:3px}
+  table{width:100%;border-collapse:collapse;margin-top:6px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);
+        vertical-align:top;font-size:13px}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+  tr.mismatch{background:var(--badbg)}
+  tr.unreadable,tr.missing{background:var(--warnbg)}
+  .val{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+  .lbl{color:var(--muted);font-size:11px;display:block;margin-top:2px}
+  .none{color:var(--muted);font-style:italic}
+  .actions{border-top:1px solid var(--line);padding:16px 20px;background:#fbfcfd;
+           border-radius:0 0 10px 10px}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+  select,input[type=text]{font:inherit;padding:7px 9px;border:1px solid var(--line);
+                          border-radius:6px;background:#fff}
+  input[type=text]{flex:1;min-width:180px}
+  .fields{display:flex;gap:12px;flex-wrap:wrap;margin:8px 0 12px}
+  .fields label{font-size:12px;display:flex;gap:5px;align-items:center;color:var(--muted)}
+  details{margin-top:16px}
+  summary{cursor:pointer;color:var(--accent);font-size:13px}
+  pre{background:#f3f5f7;border:1px solid var(--line);border-radius:8px;padding:12px;
+      overflow:auto;max-height:340px;font-size:11.5px;white-space:pre-wrap}
+  .empty{padding:50px 20px;text-align:center;color:var(--muted)}
+  #toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);
+         background:#1b1f24;color:#fff;padding:10px 18px;border-radius:8px;
+         font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none}
+  #toast.show{opacity:1}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Document Review Queue</h1>
+  <div class="stats" id="stats"></div>
+  <button id="export" class="primary">Update report</button>
+  <button id="reload" class="ghost">Reload</button>
+</header>
+
+<main>
+  <div class="panel">
+    <div class="tabs">
+      <button data-q="pending" class="on">Pending</button>
+      <button data-q="mismatch">Mismatches</button>
+      <button data-q="reviewed">Reviewed</button>
+      <button data-q="all">All</button>
+    </div>
+    <div id="queue"></div>
+  </div>
+
+  <div class="panel" id="detail">
+    <div class="empty">Select a case from the queue.</div>
+  </div>
+</main>
+
+<div id="toast"></div>
+
+<script>
+const FIELDS = ["shipper","consignee","notify_party","port_of_loading",
+                "port_of_discharge","container_count","gross_weight_kg"];
+const REASONS = ["wrong_doc_type","missing_attachment","unreadable","missing_value"];
+let queue = "pending", current = null;
+
+const esc = s => (s ?? "").toString().replace(/[&<>"]/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const pretty = f => f.replace(/_/g, " ");
+
+function toast(msg){
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+async function loadStats(){
+  const s = await (await fetch("/api/stats")).json();
+  document.getElementById("stats").innerHTML = `
+    <div class="stat"><b>${s.pending}</b><span>pending</span></div>
+    <div class="stat"><b>${s.reviewed}</b><span>reviewed</span></div>
+    <div class="stat"><b>${s.mismatches}</b><span>mismatches</span></div>
+    <div class="stat"><b>${s.total_cases}</b><span>cases</span></div>`;
+  if(!s.pipeline_has_run){
+    document.getElementById("queue").innerHTML =
+      `<div class="empty">No results.json found.<br><br>
+       Run the pipeline first:<br><code>python scripts/run_pipeline.py</code></div>`;
+  }
+}
+
+function statusChip(row){
+  if(row.reviewed) return `<span class="chip done">${row.decision}</span>`;
+  if(row.status === "NEEDS_REVIEW")
+    return `<span class="chip rev">${(row.review_reason||"review").replace(/_/g," ")}</span>`;
+  if(row.status === "MISMATCH") return `<span class="chip mis">mismatch</span>`;
+  return `<span class="chip ok">ok</span>`;
+}
+
+async function loadQueue(){
+  const data = await (await fetch(`/api/cases?queue=${queue}`)).json();
+  const box = document.getElementById("queue");
+  if(!data.cases.length){
+    box.innerHTML = `<div class="empty">Nothing in this queue.</div>`;
+    return;
+  }
+  box.innerHTML = data.cases.map(c => `
+    <div class="item ${c.email_id===current?"on":""}" data-id="${c.email_id}">
+      <div class="id">${c.email_id} ${statusChip(c)}</div>
+      <div class="subj">${esc(c.subject)}</div>
+    </div>`).join("");
+  box.querySelectorAll(".item").forEach(el =>
+    el.onclick = () => openCase(el.dataset.id));
+}
+
+function fieldRow(c){
+  const cls = c.status === "match" ? "" : c.status;
+  const cell = (v, label) => v == null
+    ? `<span class="none">not found</span>`
+    : `<span class="val">${esc(v)}</span>` +
+      (label ? `<span class="lbl">labelled “${esc(label)}”</span>` : "");
+  return `<tr class="${cls}">
+    <td><b>${pretty(c.field)}</b>${c.reason ? `<span class="lbl">${esc(c.reason)}</span>` : ""}</td>
+    <td>${cell(c.si_value, c.si_label)}</td>
+    <td>${cell(c.bl_value, c.bl_label)}</td>
+    <td>${c.status}</td></tr>`;
+}
+
+async function openCase(id){
+  current = id;
+  const d = await (await fetch(`/api/cases/${id}`)).json();
+  const p = d.pipeline, e = d.effective;
+
+  const kind = p.status === "NEEDS_REVIEW" ? "rev"
+             : p.status === "MISMATCH" ? "mis" : "ok";
+  const headline = p.status === "NEEDS_REVIEW"
+    ? `Escalated — ${(p.review_reason||"").replace(/_/g," ")}`
+    : p.status === "MISMATCH"
+      ? `Mismatch in ${p.defect_fields.map(pretty).join(", ")}`
+      : "No mismatch detected";
+
+  const checks = FIELDS.map(f => `
+    <label><input type="checkbox" class="df" value="${f}"
+      ${e.defect_fields.includes(f) ? "checked" : ""}> ${pretty(f)}</label>`).join("");
+
+  document.getElementById("detail").innerHTML = `
+    <div class="pad">
+      <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div>
+          <b>${d.email_id}</b> — ${esc(d.subject)}
+          <div class="meta">from ${esc(d.from)} ·
+            ${d.category} (${d.decided_by || "?"}, ${(d.category_confidence*100).toFixed(0)}%)</div>
+        </div>
+        ${e.human_reviewed ? `<span class="chip done">human reviewed</span>` : ""}
+      </div>
+
+      <div class="banner ${kind}">
+        <b>${headline}</b>
+        ${esc(p.escalation_detail || "All seven fields were compared.")}
+      </div>
+
+      <table>
+        <thead><tr><th>Field</th><th>Shipping Instruction</th>
+        <th>Draft Bill of Lading</th><th>Result</th></tr></thead>
+        <tbody>${d.comparisons.map(fieldRow).join("")}</tbody>
+      </table>
+
+      <details>
+        <summary>Email body</summary>
+        <pre>${esc(d.body)}</pre>
+      </details>
+      <details id="docs">
+        <summary>Source documents (${d.attachments.length})</summary>
+        <div id="docbody" class="meta">loading…</div>
+      </details>
+    </div>
+
+    <div class="actions">
+      <div class="row">
+        <button class="primary" id="confirm">Confirm this verdict</button>
+        <span class="meta">or correct it:</span>
+        <select id="status">
+          <option value="OK">OK — no mismatch</option>
+          <option value="MISMATCH">MISMATCH — fields differ</option>
+          <option value="NEEDS_REVIEW">NEEDS_REVIEW — still cannot decide</option>
+        </select>
+        <select id="reason" style="display:none">
+          ${REASONS.map(r => `<option value="${r}">${r.replace(/_/g," ")}</option>`).join("")}
+        </select>
+      </div>
+      <div class="fields" id="dfwrap" style="display:none">${checks}</div>
+      <div class="row">
+        <input type="text" id="note" placeholder="Note (what did you check?)">
+        <button id="correct">Save correction</button>
+        ${d.review ? `<button id="undo" class="ghost">Undo review</button>` : ""}
+      </div>
+      ${d.review ? `<div class="meta">${d.review.decision} by
+        ${esc(d.review.reviewer)} at ${esc(d.review.decided_at)}
+        ${d.review.note ? "— " + esc(d.review.note) : ""}</div>` : ""}
+    </div>`;
+
+  const statusSel = document.getElementById("status");
+  statusSel.value = e.status === "NEEDS_REVIEW" ? "MISMATCH" : e.status;
+  const sync = () => {
+    document.getElementById("dfwrap").style.display =
+      statusSel.value === "MISMATCH" ? "flex" : "none";
+    document.getElementById("reason").style.display =
+      statusSel.value === "NEEDS_REVIEW" ? "block" : "none";
+  };
+  statusSel.onchange = sync; sync();
+
+  document.getElementById("confirm").onclick = () => send(id, {
+    decision: "confirm", note: document.getElementById("note").value });
+
+  document.getElementById("correct").onclick = () => send(id, {
+    decision: "correct",
+    status: statusSel.value,
+    review_reason: document.getElementById("reason").value,
+    defect_fields: [...document.querySelectorAll(".df:checked")].map(c => c.value),
+    note: document.getElementById("note").value });
+
+  const undo = document.getElementById("undo");
+  if(undo) undo.onclick = async () => {
+    await fetch(`/api/cases/${id}/review`, {method:"DELETE"});
+    toast("Review undone"); await refresh(); openCase(id);
+  };
+
+  document.getElementById("docs").ontoggle = async ev => {
+    if(!ev.target.open || ev.target.dataset.done) return;
+    ev.target.dataset.done = "1";
+    const r = await (await fetch(`/api/cases/${id}/documents`)).json();
+    document.getElementById("docbody").innerHTML = r.documents.length
+      ? r.documents.map(doc => `
+          <div style="margin-top:10px">
+            <b>${doc.role}</b> — ${esc(doc.path)}
+            <span class="lbl">read as ${doc.read_method}${
+              doc.doc_type_detected ? " · detected " + doc.doc_type_detected : ""}${
+              doc.read_ok ? "" : " · " + esc(doc.read_error)}</span>
+            <pre>${esc(doc.text) || "(no text extracted)"}</pre>
+          </div>`).join("")
+      : "<i>No attachments on this email.</i>";
+  };
+}
+
+async function send(id, body){
+  const res = await fetch(`/api/cases/${id}/review`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body)});
+  if(!res.ok){ toast("Error: " + (await res.json()).detail); return; }
+  const r = await res.json();
+  toast(`Saved — now ${r.status}${r.defect_fields.length
+    ? " (" + r.defect_fields.map(pretty).join(", ") + ")" : ""}`);
+  await refresh();
+  openCase(id);
+}
+
+async function refresh(){ await loadStats(); await loadQueue(); }
+
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".tabs button").forEach(x => x.classList.remove("on"));
+  b.classList.add("on"); queue = b.dataset.q; loadQueue();
+});
+
+document.getElementById("export").onclick = async () => {
+  const r = await (await fetch("/api/export", {method:"POST"})).json();
+  toast(`submission.json updated — ${r.reviews_applied} reviews, ${r.entries_changed} entries changed`);
+};
+
+document.getElementById("reload").onclick = async () => {
+  await fetch("/api/reload", {method:"POST"});
+  toast("Reloaded pipeline results"); await refresh();
+};
+
+refresh();
+</script>
+</body>
+</html>

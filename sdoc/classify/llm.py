@@ -28,12 +28,35 @@ import json
 import os
 import pathlib
 import re
+import time
 
 from sdoc.schemas import Category
 
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 BATCH_SIZE = 20
 CACHE_PATH = pathlib.Path(".cache/classify.json")
+
+# A 503 ("high demand") or a 429 clears on its own; a bad key never will.
+# Retrying the first and latching on the second is the whole distinction.
+MAX_RETRIES = 3
+
+# Checked FIRST, because a quota error's body contains a retry delay like
+# "4.926294033s" -- and a bare substring search for "403" finds one inside
+# that float. Transient always wins.
+TRANSIENT_MARKERS = ("RESOURCE_EXHAUSTED", "UNAVAILABLE", "DEADLINE",
+                     "INTERNAL", "timeout", "429", "500", "503")
+
+PERMANENT_MARKERS = ("UNAUTHENTICATED", "PERMISSION_DENIED",
+                     "API_KEY_INVALID", "NOT_FOUND", "INVALID_ARGUMENT")
+
+
+def _is_permanent(exc: Exception) -> bool:
+    """True when retrying cannot possibly help (bad key, bad model name)."""
+    message = str(exc)
+    if any(marker.lower() in message.lower() for marker in TRANSIENT_MARKERS):
+        return False
+    # Status names, not bare numbers -- numbers appear in retry delays.
+    return any(marker in message for marker in PERMANENT_MARKERS)
 
 SYSTEM_PROMPT = """\
 You are triaging the inbox of a shipping documentation team at a paper
@@ -181,8 +204,10 @@ class GeminiClassifier:
             return None
         return self._client
 
-    def _classify_batch(self, emails: list) -> dict:
-        if self._failed:          # one hard failure is enough; stop retrying
+    def _classify_batch(self, emails: list, attempt: int = 0) -> dict:
+        # _failed is only ever set by an error retrying cannot fix, so
+        # stopping here does not throw away recoverable work.
+        if self._failed:
             return {}
         client = self._client_or_none()
         if client is None:
@@ -204,10 +229,28 @@ class GeminiClassifier:
             )
             payload = json.loads(response.text)
         except Exception as exc:
-            if not self._failed:
-                self._failed = True
-                print(f"  ! Gemini call failed: {exc}")
-                print("    Remaining emails fall back to the rule classifier.")
+            # Bad key or bad model name: every further call fails the same
+            # way, so stop the whole run rather than hammering the API.
+            if _is_permanent(exc):
+                if not self._failed:
+                    self._failed = True
+                    print(f"  ! Gemini unavailable, not retrying: {exc}")
+                    print("    Everything falls back to the rule classifier.")
+                return {}
+
+            # Transient (503 high demand, 429 rate limit, network blip).
+            # Back off and try this batch again.
+            if attempt < MAX_RETRIES:
+                delay = 2 ** attempt
+                print(f"    retrying in {delay}s ({exc.__class__.__name__})")
+                time.sleep(delay)
+                return self._classify_batch(emails, attempt + 1)
+
+            # Out of retries. Give up on THIS batch only -- the next one
+            # still gets its own attempts, and the cache means a re-run
+            # picks up exactly what is missing.
+            print(f"  ! batch of {len(emails)} failed after "
+                  f"{MAX_RETRIES} retries: {exc}")
             return {}
 
         out = {}
