@@ -5,8 +5,7 @@ email, decides what it is and whether the attached documents agree.
 
 Built for the **Averis x Monash Hackathon 2026**.
 
-> **Status:** in active development. Setup and project structure below are
-> current; pipeline commands land as the stages are implemented.
+Live demo: **https://averis-monash-hackathon-2026.onrender.com**
 
 ---
 
@@ -108,16 +107,24 @@ bash scripts/setup_data.sh
 
 That's the whole setup — the `✓` line above confirms it worked.
 
-### 4. Configure the AI
+### 4. Install dependencies and configure the AI
 
-Classification and field extraction run on Gemini, so the pipeline needs an
-API key. Never put the key in a source file — it would end up on GitHub.
-
-Install the client:
+Install everything the pipeline needs, including the Gemini client and the three
+libraries that read the PDF, `.docx` and `.xlsx` attachments:
 
 ```bash
-pip install google-genai
+pip install -r requirements.txt
 ```
+
+**Do not skip this or install only `google-genai`.** A missing reader library
+does not raise: `sdoc/documents/reader.py` catches it per format and returns
+no text, so those attachments are escalated as `unreadable` instead. Without
+`pdfplumber`, `python-docx` and `openpyxl` the run completes with no error and
+reads only the 192 `.txt` attachments out of 250, and every total comes out
+different.
+
+Classification and field extraction run on Gemini, so the pipeline also needs
+an API key.
 
 Then put the key in a `.env` file in the repo root. `sdoc/config.py` reads
 it at startup, and `.gitignore` keeps `.env` out of git:
@@ -323,4 +330,4 @@ breaking, and tell the team before editing.
 
 ## Team
 
-_Averis x Monash Hackathon 2026_
+_Averis x Monash Hackathon 2026 Lepak Team_
